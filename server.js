@@ -1,30 +1,36 @@
 require('dotenv').config();
+const mongoose = require('mongoose');
 const app = require('./src/app');
-const NotificationSubscriber = require('./src/models/NotificationSubscriber');
+const connectDB = require('./src/config/db');
 
 const PORT = process.env.PORT || 5000;
 
-// Connect to SQLite Database
-NotificationSubscriber.initDb()
-.then(() => {
-    console.log('✅ Connected to SQLite Database');
-    app.listen(PORT, () => {
-        console.log(`🚀 Server running on port ${PORT} in ${process.env.NODE_ENV || 'development'} mode`);
-    });
-})
-.catch(err => {
-    console.error('❌ Failed to connect to SQLite Database', err);
-    process.exit(1);
-});
+// Connect to MongoDB, then start server
+connectDB()
+    .then(() => {
+        const server = app.listen(PORT, () => {
+            console.log(
+                `🚀 Server running on port ${PORT} in ${process.env.NODE_ENV || 'development'} mode`
+            );
+        });
 
-// Graceful shutdown
-process.on('SIGTERM', () => {
-    console.log('SIGTERM signal received: closing HTTP server');
-    NotificationSubscriber.closeDb().then(() => {
-        console.log('SQLite connection closed.');
-        process.exit(0);
+        // Graceful shutdown
+        const shutdown = async (signal) => {
+            console.log(`${signal} signal received: closing HTTP server`);
+            server.close(async () => {
+                await mongoose.connection.close();
+                console.log('MongoDB connection closed.');
+                process.exit(0);
+            });
+        };
+
+        process.on('SIGTERM', () => shutdown('SIGTERM'));
+        process.on('SIGINT', () => shutdown('SIGINT'));
+    })
+    .catch((err) => {
+        console.error('❌ Failed to connect to MongoDB:', err.message);
+        process.exit(1);
     });
-});
 
 process.on('unhandledRejection', (err) => {
     console.error('Unhandled Promise Rejection:', err);
