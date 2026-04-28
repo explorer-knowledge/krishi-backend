@@ -14,6 +14,10 @@ connectDB()
             );
         });
 
+        // Start alert scheduler
+        const alertScheduler = require('./src/services/alertScheduler');
+        alertScheduler.start();
+
         // Graceful shutdown
         const shutdown = async (signal) => {
             console.log(`${signal} signal received: closing HTTP server`);

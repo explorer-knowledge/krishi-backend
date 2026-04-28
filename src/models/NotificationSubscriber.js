@@ -20,11 +20,39 @@ const notificationSubscriberSchema = new mongoose.Schema(
             type: Boolean,
             default: true,
         },
-        lastAlertSentAt: {
+        whatsappOptIn: {
+            type: Boolean,
+            default: false,
+        },
+        cropTypes: {
+            type: [String],
+            default: [],
+        },
+        farmSizeAcres: {
+            type: Number,
+            default: null,
+        },
+        irrigationType: {
+            type: String,
+            default: 'Unknown',
+        },
+        preferredLanguage: {
+            type: String,
+            default: 'hi',
+        },
+        lastDailyAlertAt: {
             type: Date,
             default: null,
         },
-        alertsSentCount: {
+        lastNewsAlertAt: {
+            type: Date,
+            default: null,
+        },
+        lastCriticalAlertAt: {
+            type: Date,
+            default: null,
+        },
+        totalAlertsSent: {
             type: Number,
             default: 0,
         },

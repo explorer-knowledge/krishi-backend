@@ -1,8 +1,9 @@
 const NotificationSubscriber = require('../models/NotificationSubscriber');
+const twilioService = require('../services/twilioService');
 
 exports.subscribe = async (req, res, next) => {
     try {
-        const { mobile, state, location } = req.body;
+        const { mobile, state, location, whatsappOptIn, cropTypes, farmSizeAcres, irrigationType, preferredLanguage } = req.body;
 
         if (!mobile) {
             return res.status(400).json({
@@ -36,7 +37,27 @@ exports.subscribe = async (req, res, next) => {
             mobile,
             state: state || 'Unknown',
             location: location || { lat: null, lng: null },
+            whatsappOptIn: !!whatsappOptIn,
+            cropTypes: cropTypes || [],
+            farmSizeAcres: farmSizeAcres || null,
+            irrigationType: irrigationType || 'Unknown',
+            preferredLanguage: preferredLanguage || 'hi'
         });
+
+        // Send Welcome SMS
+        const lang = newSubscriber.preferredLanguage === 'en' ? 'English' : 'Hindi';
+        let welcomeMsg = lang === 'English' 
+            ? 'Welcome to Krishi-Udyami! You will receive daily weather updates and crop advisory on this number.'
+            : 'कृषि-उद्यमी में आपका स्वागत है! आपको इस नंबर पर दैनिक मौसम अपडेट और फसल सलाह प्राप्त होगी।';
+        
+        await twilioService.sendSMS(mobile, welcomeMsg);
+
+        if (newSubscriber.whatsappOptIn) {
+            const waMsg = lang === 'English' 
+                ? 'Welcome to Krishi-Udyami WhatsApp Alerts! Stay tuned for daily news.'
+                : 'कृषि-उद्यमी व्हाट्सएप अलर्ट में आपका स्वागत है! आपको दैनिक समाचार मिलेंगे।';
+            await twilioService.sendWhatsApp(mobile, waMsg);
+        }
 
         res.status(201).json({
             success: true,
