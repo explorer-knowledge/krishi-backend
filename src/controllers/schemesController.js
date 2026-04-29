@@ -1,69 +1,107 @@
 const axios = require('axios');
 const cache = require('../utils/cache');
+const cheerio = require('cheerio');
+const fs = require('fs');
+const path = require('path');
 
-const fallbackSchemes = [
-    "पीएम-किसान 15वीं किस्त: ई-केवाईसी की समय सीमा बढ़ाई गई है।",
-    "प्रधानमंत्री फसल बीमा योजना (PMFBY): खरीफ सीज़न पंजीकरण खुला है।",
-    "कृषि मशीनीकरण (SMAM): उपकरण पर 50% तक सब्सिडी।",
-    "कुसुम योजना (KUSUM): सोलर पंप पर 60% रियायत।",
-    "मनरेगा: 12 राज्यों में न्यूनतम वेतन बढ़ाया गया।",
-    "मृदा स्वास्थ्य कार्ड: मुफ्त मिट्टी परीक्षण शिविर।",
-    "ई-नाम (e-NAM): फसल सीधे खरीदारों को बेचें।",
-    "पीएम कृषि सिंचाई योजना: ड्रिप सिंचाई अनुदान उपलब्ध।",
-    "परंपरागत कृषि विकास योजना: जैविक खेती हेतु ₹50,000/हेक्टेयर।",
-    "दीन दयाल उपाध्याय ग्रामीण कौशल्य योजना: मुफ्त प्रशिक्षण।"
-];
+const CACHE_KEY = 'schemes_data';
+const CACHE_TTL = 3600 * 6; // 6 hours
 
-exports.getSchemes = async (req, res, next) => {
+const SCHEMES_FILE = path.join(__dirname, '../../data/schemes.json');
+
+
+const scrapeSchemes = async () => {
     try {
-        const cacheKey = `schemes_global`;
-
-        const cachedData = cache.get(cacheKey);
-        if (cachedData) {
-            return res.json({
-                success: true,
-                data: cachedData,
-                cached: true,
-                timestamp: new Date().toISOString()
-            });
-        }
-
-        let schemes = [];
-        let isFallback = false;
-
-        try {
-            const query = encodeURIComponent('कृषि योजना OR सब्सिडी');
-            const rssUrl = `https://news.google.com/rss/search?q=${query}&hl=hi&gl=IN&ceid=IN:hi`;
-            const apiUrl = `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(rssUrl)}`;
-            
-            const response = await axios.get(apiUrl);
-            if (response.data && response.data.items && response.data.items.length > 0) {
-                schemes = response.data.items.map(item => item.title ? item.title.split(' - ')[0] : '');
-            } else {
-                throw new Error("Empty items from RSS");
+        const response = await axios.get('https://agriwelfare.gov.in/en/Major', { timeout: 10000 });
+        const $ = cheerio.load(response.data);
+        const scrapedSchemes = [];
+        
+        $('tr').each((i, el) => {
+            const tds = $(el).find('td');
+            if (tds.length >= 4) {
+                const title = $(tds[1]).text().trim();
+                let link = $(tds[3]).find('a').attr('href');
+                if (!link) link = 'https://agriwelfare.gov.in/en/Major';
+                else if (link.startsWith('/')) link = 'https://agriwelfare.gov.in' + link;
+                
+                if (title && title !== 'Scheme Name') {
+                    scrapedSchemes.push({
+                        id: `scraped-${Date.now()}-${i}`,
+                        name_en: title,
+                        name_hi: title,
+                        benefit_en: 'For more details, visit the official link.',
+                        benefit_hi: 'अधिक जानकारी के लिए आधिकारिक लिंक पर जाएं।',
+                        eligibility_en: 'Refer to official guidelines',
+                        eligibility_hi: 'आधिकारिक दिशानिर्देश देखें',
+                        apply_url: link,
+                        category: 'all'
+                    });
+                }
             }
-        } catch (error) {
-            console.error("Failed to fetch schemes, using fallback:", error.message);
-            schemes = fallbackSchemes;
-            isFallback = true;
-        }
-
-        const data = {
-            schemes,
-            isFallback
-        };
-
-        const ttl = parseInt(process.env.SCHEMES_CACHE_TTL) || 3600;
-        cache.set(cacheKey, data, ttl);
-
-        res.json({
-            success: true,
-            data,
-            cached: false,
-            timestamp: new Date().toISOString()
         });
-
-    } catch (error) {
-        next(error);
+        return scrapedSchemes;
+    } catch (e) {
+        console.warn('Scraping failed:', e.message);
+        return [];
     }
+}
+
+const getSchemes = async (req, res) => {
+  const lang = req.query.lang || 'en';
+  const category = req.query.category || 'all'; 
+
+  const cached = cache.get(CACHE_KEY);
+  if (cached) {
+    return res.json({ source: 'cache', schemes: filterSchemes(cached, category, lang) });
+  }
+
+  let schemes = [];
+  try {
+    if (fs.existsSync(SCHEMES_FILE)) {
+      const fileData = fs.readFileSync(SCHEMES_FILE, 'utf8');
+      schemes = JSON.parse(fileData);
+    }
+  } catch (err) {
+    console.error('Failed to read schemes.json:', err);
+  }
+
+  // Try to enhance with scraped schemes from government portal
+  const scraped = await scrapeSchemes();
+  let fileUpdated = false;
+  
+  if (scraped.length > 0) {
+    // Add scraped schemes that don't duplicate existing IDs
+    const existingIds = new Set(schemes.map(s => s.name_en.toLowerCase()));
+    scraped.forEach(s => {
+      if (!existingIds.has(s.name_en.toLowerCase())) {
+        schemes.push(s);
+        fileUpdated = true;
+      }
+    });
+  }
+
+  if (fileUpdated) {
+    try {
+      fs.writeFileSync(SCHEMES_FILE, JSON.stringify(schemes, null, 2), 'utf8');
+    } catch (err) {
+      console.error('Failed to update schemes.json:', err);
+    }
+  }
+
+  cache.set(CACHE_KEY, schemes, CACHE_TTL);
+  res.json({ source: 'json', schemes: filterSchemes(schemes, category, lang) });
 };
+
+function filterSchemes(schemes, category, lang) {
+  let filtered = category === 'all' ? schemes : schemes.filter(s => s.category === category);
+  return filtered.map(s => ({
+    id: s.id,
+    name: lang === 'hi' ? s.name_hi : s.name_en,
+    benefit: lang === 'hi' ? s.benefit_hi : s.benefit_en,
+    eligibility: lang === 'hi' ? s.eligibility_hi : s.eligibility_en,
+    apply_url: s.apply_url,
+    category: s.category
+  }));
+}
+
+module.exports = { getSchemes };

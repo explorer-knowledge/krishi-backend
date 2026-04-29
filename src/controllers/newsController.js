@@ -15,7 +15,8 @@ const fallbackNews = [
 exports.getNews = async (req, res, next) => {
     try {
         const state = req.query.state || 'Madhya Pradesh';
-        const cacheKey = `news_${state.toLowerCase().replace(/\s+/g, '_')}`;
+        const lang = req.query.lang === 'en' ? 'en' : 'hi';
+        const cacheKey = `news_${state.toLowerCase().replace(/\s+/g, '_')}_${lang}`;
 
         const cachedData = cache.get(cacheKey);
         if (cachedData) {
@@ -31,8 +32,11 @@ exports.getNews = async (req, res, next) => {
         let isFallback = false;
 
         try {
-            const query = encodeURIComponent(`${state} किसान OR कृषि`);
-            const rssUrl = `https://news.google.com/rss/search?q=${query}&hl=hi&gl=IN&ceid=IN:hi`;
+            const query = encodeURIComponent(lang === 'hi' ? `${state} किसान OR कृषि` : `${state} farmer OR agriculture`);
+            const rssUrl = lang === 'hi' 
+                ? `https://news.google.com/rss/search?q=${query}&hl=hi&gl=IN&ceid=IN:hi`
+                : `https://news.google.com/rss/search?q=${query}&hl=en-IN&gl=IN&ceid=IN:en`;
+            
             const apiUrl = `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(rssUrl)}`;
             
             const response = await axios.get(apiUrl);
