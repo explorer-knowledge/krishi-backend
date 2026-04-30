@@ -18,4 +18,7 @@ router.post('/send-otp', otpLimiter, authController.sendOtp);
 // POST /api/auth/verify-otp
 router.post('/verify-otp', authController.verifyOtp);
 
+// PATCH /api/auth/update-location
+router.patch('/update-location', authController.updateLocation);
+
 module.exports = router;

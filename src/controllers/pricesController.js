@@ -94,7 +94,7 @@ const getPrices = async (req, res) => {
     const mockData = [];
     const basePrice = Math.floor(Math.random() * 2000) + 1500;
     
-    for (let i = 0; i < limit; i++) {
+    for (let i = 0; i < parseInt(limit); i++) {
         mockData.push({
             state: state || 'Madhya Pradesh',
             district: district || ['Bhopal', 'Indore', 'Jabalpur', 'Gwalior', 'Ujjain'][Math.floor(Math.random() * 5)],

@@ -1,6 +1,37 @@
 const axios = require('axios');
 const cache = require('../utils/cache');
 
+// ── Stale-while-revalidate store ─────────────────────────────────
+// Keeps the LAST successful response per location key forever
+// so we can serve it when both APIs are rate-limited.
+const staleCache = new Map();
+
+const CACHE_TTL_SECONDS  = 30 * 60;   // 30 min — fresh cache
+const STALE_KEY_SUFFIX   = '_stale';  // stale-cache key marker
+
+function cacheKey(lat, lng) {
+    return `weather_${parseFloat(lat).toFixed(2)}_${parseFloat(lng).toFixed(2)}`;
+}
+
+function saveStale(key, data) {
+    staleCache.set(key + STALE_KEY_SUFFIX, { data, savedAt: new Date().toISOString() });
+}
+
+function getStale(key) {
+    return staleCache.get(key + STALE_KEY_SUFFIX) || null;
+}
+
+// ── Hindi weather translation table ──────────────────────────────
+const weatherHindi = {
+    'sunny': 'धूप', 'mostly sunny': 'अधिकतर धूप', 'partly sunny': 'आंशिक धूप',
+    'partly cloudy': 'आंशिक बादल', 'mostly cloudy': 'अधिकतर बादल', 'cloudy': 'बादल',
+    'overcast': 'घने बादल', 'clear': 'साफ', 'rain': 'बारिश', 'showers': 'बौछारें',
+    'thunderstorm': 'तूफान', 'fog': 'कोहरा', 'haze': 'धुंध', 'windy': 'हवादार',
+    'hot': 'गर्म', 'humid': 'उमस', 'snow': 'बर्फ', 'sleet': 'ओले',
+    'intermittent clouds': 'रुक-रुक कर बादल', 'dreary': 'उदास मौसम',
+    'mostly clear': 'अधिकतर साफ', 'light rain': 'हल्की बारिश',
+    'heavy rain': 'भारी बारिश', 'drizzle': 'फुहार', 'mist': 'धुंध',
+};
 
 const translateWeather = (engText) => {
     if (!engText) return '';
@@ -9,19 +40,21 @@ const translateWeather = (engText) => {
     return hi ? `${hi} (${engText})` : engText;
 };
 
-/**
- * Returns mock/fallback weather data when AccuWeather API is unavailable
- * (quota exhausted, key invalid, network error, etc)
- */
-function getFallbackWeatherData(lat, lng) {
+// ── Fallback mock data ────────────────────────────────────────────
+function getFallbackWeatherData(lat, lng, staleEntry) {
+    // Prefer stale real data over mock
+    if (staleEntry) {
+        console.warn('[Weather] Serving STALE cached data (both APIs rate-limited)');
+        return { ...staleEntry.data, _stale: true, _staleAt: staleEntry.savedAt };
+    }
+
     const now = new Date();
-    const month = now.getMonth(); // 0-11
-    // Approximate Indian seasonal temps by month
+    const month = now.getMonth();
     const temps = [22,24,28,33,38,36,32,30,29,30,27,23];
     const temp = temps[month];
     const conditions = month >= 6 && month <= 9 ? 'Partly Cloudy' : month >= 3 && month <= 5 ? 'Mostly Sunny' : 'Clear';
     const rainProb = month >= 6 && month <= 9 ? 60 : 10;
-    console.warn('[Weather] Using fallback mock data — AccuWeather API unavailable');
+    console.warn('[Weather] Using fallback mock data — both APIs unavailable');
     return {
         location: { city: 'Bhopal', state: 'Madhya Pradesh', key: null, lat: lat || 23.26, lng: lng || 77.41 },
         current: {
@@ -41,19 +74,19 @@ function getFallbackWeatherData(lat, lng) {
     };
 }
 
+// ── OpenWeather fallback ──────────────────────────────────────────
 async function fetchWeatherFromOpenWeather(lat, lng) {
     const apiKey = process.env.OPENWEATHER_API_KEY;
     if (!apiKey) throw new Error('OPENWEATHER_API_KEY not configured');
 
     const [currentRes, forecastRes] = await Promise.all([
-        axios.get(`https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lng}&appid=${apiKey}&units=metric`),
-        axios.get(`https://api.openweathermap.org/data/2.5/forecast?lat=${lat}&lon=${lng}&appid=${apiKey}&units=metric`)
+        axios.get(`https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lng}&appid=${apiKey}&units=metric`, { timeout: 8000 }),
+        axios.get(`https://api.openweathermap.org/data/2.5/forecast?lat=${lat}&lon=${lng}&appid=${apiKey}&units=metric`, { timeout: 8000 })
     ]);
 
     const currentData = currentRes.data;
     const forecastData = forecastRes.data;
 
-    // Aggregate 3-hourly forecast into daily min/max
     const dailyForecasts = {};
     forecastData.list.forEach(item => {
         const date = item.dt_txt.split(' ')[0];
@@ -69,95 +102,76 @@ async function fetchWeatherFromOpenWeather(lat, lng) {
     const forecast = (() => {
         const arr = Object.keys(dailyForecasts).slice(0, 5).map(date => {
             const dayData = dailyForecasts[date];
-            // Most common condition
             const conditionCount = {};
-            let maxCond = dayData.conditions[0];
-            let maxCount = 0;
+            let maxCond = dayData.conditions[0], maxCount = 0;
             dayData.conditions.forEach(c => {
                 conditionCount[c] = (conditionCount[c] || 0) + 1;
-                if (conditionCount[c] > maxCount) {
-                    maxCount = conditionCount[c];
-                    maxCond = c;
-                }
+                if (conditionCount[c] > maxCount) { maxCount = conditionCount[c]; maxCond = c; }
             });
-            
-            return {
-                date: date,
-                maxTemp: dayData.max,
-                minTemp: dayData.min,
-                dayPhrase: maxCond,
-                nightPhrase: maxCond,
-                rainProbability: dayData.rainProb
-            };
+            return { date, maxTemp: dayData.max, minTemp: dayData.min, dayPhrase: maxCond, nightPhrase: maxCond, rainProbability: dayData.rainProb };
         });
         const last = arr[arr.length - 1];
         for (let i = 1; i <= 7 - arr.length; i++) {
-            const d = new Date(last.date);
-            d.setDate(d.getDate() + i);
-            arr.push({
-                date: d.toISOString().split('T')[0],
-                maxTemp: last.maxTemp,
-                minTemp: last.minTemp,
-                dayPhrase: last.dayPhrase,
-                nightPhrase: last.nightPhrase,
-                rainProbability: last.rainProbability
-            });
+            const d = new Date(last.date); d.setDate(d.getDate() + i);
+            arr.push({ date: d.toISOString().split('T')[0], maxTemp: last.maxTemp, minTemp: last.minTemp, dayPhrase: last.dayPhrase, nightPhrase: last.nightPhrase, rainProbability: last.rainProbability });
         }
         return arr;
     })();
 
     const conditionText = currentData.weather[0].main;
-
     return {
-        location: { city: currentData.name, state: 'Unknown', key: null, lat: lat, lng: lng },
+        location: { city: currentData.name, state: 'Unknown', key: null, lat, lng },
         current: {
             temperature: currentData.main.temp,
             feelsLike: currentData.main.feels_like,
             weatherText: conditionText,
             weatherTextTranslated: translateWeather(conditionText),
             humidity: currentData.main.humidity,
-            windSpeed: currentData.wind.speed * 3.6, // m/s to km/h
-            windDirection: currentData.wind.deg > 180 ? 'NW' : 'SE', // Approximate
-            visibility: currentData.visibility / 1000, // m to km
-            uvIndex: 5,
-            uvIndexText: 'Moderate',
-            dewPoint: currentData.main.temp - ((100 - currentData.main.humidity)/5),
+            windSpeed: Math.round(currentData.wind.speed * 3.6 * 10) / 10,
+            windDirection: currentData.wind.deg != null ? (['N','NE','E','SE','S','SW','W','NW'][Math.round(currentData.wind.deg / 45) % 8]) : 'N/A',
+            visibility: currentData.visibility / 1000,
+            uvIndex: 5, uvIndexText: 'Moderate',
+            dewPoint: Math.round((currentData.main.temp - ((100 - currentData.main.humidity) / 5)) * 10) / 10,
             pressure: currentData.main.pressure,
             cloudCover: currentData.clouds.all,
-            precip1hr: currentData.rain ? currentData.rain['1h'] || 0 : 0,
+            precip1hr: currentData.rain ? (currentData.rain['1h'] || 0) : 0,
             observedAt: new Date(currentData.dt * 1000).toISOString()
         },
         agri: {
-            evapotranspiration: 4.0,
-            solarIrradiance: 400,
-            hoursOfSun: 8,
+            evapotranspiration: 4.0, solarIrradiance: 400, hoursOfSun: 8,
             rainProbability: forecast.length > 0 ? forecast[0].rainProbability : 0
         },
-        forecast: forecast
+        forecast
     };
 }
 
+// ── AccuWeather primary ───────────────────────────────────────────
 async function fetchWeatherFromLatLng(lat, lng) {
     const apiKey = process.env.ACCUWEATHER_API_KEY;
     const baseUrl = process.env.ACCUWEATHER_BASE_URL;
 
-    // Step 1: Get location key
+    const key = cacheKey(lat, lng);
+
+    // Return from fresh cache first
+    const cached = cache.get(key);
+    if (cached) return { data: cached, cached: true };
+
     const geoRes = await axios.get(
-        `${baseUrl}/locations/v1/cities/geoposition/search?apikey=${apiKey}&q=${lat},${lng}`
+        `${baseUrl}/locations/v1/cities/geoposition/search?apikey=${apiKey}&q=${lat},${lng}`,
+        { timeout: 8000 }
     );
     const locData = geoRes.data;
     if (!locData || !locData.Key) throw Object.assign(new Error('Location not found'), { code: 'LOCATION_NOT_FOUND' });
 
     const locationKey = locData.Key;
-    const city = locData.LocalizedName;
+    const city  = locData.LocalizedName;
     const state = locData.AdministrativeArea?.LocalizedName || 'Unknown';
     const resolvedLat = locData.GeoPosition?.Latitude ?? parseFloat(lat);
     const resolvedLng = locData.GeoPosition?.Longitude ?? parseFloat(lng);
 
-    // Step 2 & 3: Parallel fetch current + 5-day forecast
     const [currentRes, forecastRes] = await Promise.all([
-        axios.get(`${baseUrl}/currentconditions/v1/${locationKey}?apikey=${apiKey}&details=true`),
-        axios.get(`${baseUrl}/forecasts/v1/daily/5day/${locationKey}?apikey=${apiKey}&details=true&metric=true`)
+        axios.get(`${baseUrl}/currentconditions/v1/${locationKey}?apikey=${apiKey}&details=true`, { timeout: 8000 }),
+        axios.get(`${baseUrl}/forecasts/v1/daily/5day/${locationKey}?apikey=${apiKey}&details=true&metric=true`, { timeout: 8000 })
     ]);
 
     const currentData = currentRes.data[0];
@@ -200,50 +214,67 @@ async function fetchWeatherFromLatLng(lat, lng) {
             }));
             const last = arr[arr.length - 1];
             for (let i = 1; i <= 7 - arr.length; i++) {
-                const d = new Date(last.date);
-                d.setDate(d.getDate() + i);
-                arr.push({
-                    date: d.toISOString().split('T')[0],
-                    maxTemp: last.maxTemp,
-                    minTemp: last.minTemp,
-                    dayPhrase: last.dayPhrase,
-                    nightPhrase: last.nightPhrase,
-                    rainProbability: last.rainProbability
-                });
+                const d = new Date(last.date); d.setDate(d.getDate() + i);
+                arr.push({ date: d.toISOString().split('T')[0], maxTemp: last.maxTemp, minTemp: last.minTemp, dayPhrase: last.dayPhrase, nightPhrase: last.nightPhrase, rainProbability: last.rainProbability });
             }
             return arr;
         })()
     };
 
+    // Save to fresh cache (30 min) AND stale cache (forever)
+    cache.set(key, transformedData, CACHE_TTL_SECONDS);
+    saveStale(key, transformedData);
+
     return { data: transformedData, cached: false };
 }
+
+// ── Shared resolution logic ───────────────────────────────────────
+async function resolveWeather(lat, lng) {
+    const key = cacheKey(lat, lng);
+
+    // 1. Fresh cache
+    const freshCached = cache.get(key);
+    if (freshCached) return { data: freshCached, cached: true, source: 'cache' };
+
+    // 2. AccuWeather
+    try {
+        const result = await fetchWeatherFromLatLng(lat, lng);
+        return { data: result.data, cached: result.cached, source: 'accuweather' };
+    } catch (accuErr) {
+        console.warn('[Weather] AccuWeather failed:', accuErr.message);
+    }
+
+    // 3. OpenWeather fallback
+    try {
+        const owData = await fetchWeatherFromOpenWeather(parseFloat(lat), parseFloat(lng));
+        cache.set(key, owData, CACHE_TTL_SECONDS);
+        saveStale(key, owData);
+        return { data: owData, cached: false, source: 'openweather' };
+    } catch (owErr) {
+        console.warn('[Weather] OpenWeather also failed:', owErr.message);
+    }
+
+    // 4. Stale cache (last successful real data)
+    const stale = getStale(key);
+    const fallback = getFallbackWeatherData(parseFloat(lat), parseFloat(lng), stale);
+    return { data: fallback, cached: false, source: stale ? 'stale' : 'mock' };
+}
+
+// ── Route handlers ────────────────────────────────────────────────
 
 /** GET /api/weather?lat=&lng= */
 exports.getWeather = async (req, res, next) => {
     try {
         const { lat, lng } = req.query;
         if (!lat || !lng) return res.status(400).json({ success: false, error: 'lat and lng are required', code: 'MISSING_PARAMS' });
-        try {
-            const result = await fetchWeatherFromLatLng(lat, lng);
-            res.json({ success: true, data: result.data, cached: result.cached, timestamp: new Date().toISOString() });
-        } catch (apiErr) {
-            console.warn('[Weather] AccuWeather API failed:', apiErr.message);
-            try {
-                const owData = await fetchWeatherFromOpenWeather(parseFloat(lat), parseFloat(lng));
-                console.log('[Weather] Using OpenWeather fallback data');
-                res.json({ success: true, data: owData, cached: false, source: 'openweather', timestamp: new Date().toISOString() });
-            } catch (owErr) {
-                console.error('[Weather] OpenWeather API also failed, using mock fallback:', owErr.message);
-                const fallback = getFallbackWeatherData(parseFloat(lat), parseFloat(lng));
-                res.json({ success: true, data: fallback, cached: false, source: 'fallback', timestamp: new Date().toISOString() });
-            }
-        }
+        const result = await resolveWeather(lat, lng);
+        res.json({ success: true, data: result.data, cached: result.cached, source: result.source, timestamp: new Date().toISOString() });
     } catch (error) {
         next(error);
     }
 };
 
-/** GET /api/weather/by-ip — uses caller's IP for automatic geolocation */
+/** GET /api/weather/by-ip */
 exports.getWeatherByIp = async (req, res, next) => {
     try {
         const forwarded = req.headers['x-forwarded-for'];
@@ -251,91 +282,73 @@ exports.getWeatherByIp = async (req, res, next) => {
         const ip = rawIp.replace('::ffff:', '');
         const isLocal = ['::1', '127.0.0.1', 'localhost', ''].includes(ip)
             || ip.startsWith('192.168.') || ip.startsWith('10.') || ip.startsWith('172.');
-        let lat, lng, source;
+        let lat, lng, ipSource;
         if (isLocal) {
-            lat = 23.2599; lng = 77.4126; source = 'default';
+            lat = 23.24782; lng = 77.50236; ipSource = 'default';
         } else {
             try {
                 const ipRes = await axios.get(`http://ip-api.com/json/${ip}?fields=status,lat,lon`, { timeout: 5000 });
                 if (ipRes.data.status === 'success') {
-                    lat = ipRes.data.lat; lng = ipRes.data.lon; source = 'ip-geolocation';
+                    lat = ipRes.data.lat; lng = ipRes.data.lon; ipSource = 'ip-geolocation';
                 } else {
-                    lat = 23.2599; lng = 77.4126; source = 'default';
+                    lat = 23.24782; lng = 77.50236; ipSource = 'default';
                 }
             } catch {
-                lat = 23.2599; lng = 77.4126; source = 'default';
+                lat = 23.24782; lng = 77.50236; ipSource = 'default';
             }
         }
-        try {
-            const result = await fetchWeatherFromLatLng(lat, lng);
-            res.json({ success: true, data: result.data, cached: result.cached, source, timestamp: new Date().toISOString() });
-        } catch (apiErr) {
-            console.warn('[Weather] AccuWeather API failed on by-ip:', apiErr.message);
-            try {
-                const owData = await fetchWeatherFromOpenWeather(parseFloat(lat), parseFloat(lng));
-                console.log('[Weather] Using OpenWeather fallback data');
-                res.json({ success: true, data: owData, cached: false, source: 'openweather', timestamp: new Date().toISOString() });
-            } catch (owErr) {
-                console.error('[Weather] OpenWeather API also failed on by-ip, using mock fallback:', owErr.message);
-                const fallback = getFallbackWeatherData(lat, lng);
-                res.json({ success: true, data: fallback, cached: false, source: 'fallback', timestamp: new Date().toISOString() });
-            }
-        }
+        const result = await resolveWeather(lat, lng);
+        res.json({ success: true, data: result.data, cached: result.cached, source: result.source, ipSource, timestamp: new Date().toISOString() });
     } catch (error) {
         next(error);
     }
 };
 
-/** GET /api/weather/by-city?city= — text search via AccuWeather */
+/** GET /api/weather/by-city?city= */
 exports.getWeatherByCity = async (req, res, next) => {
     try {
         const { city } = req.query;
         if (!city) return res.status(400).json({ success: false, error: 'city parameter is required', code: 'MISSING_PARAMS' });
 
-        const apiKey = process.env.ACCUWEATHER_API_KEY;
+        const apiKey  = process.env.ACCUWEATHER_API_KEY;
         const baseUrl = process.env.ACCUWEATHER_BASE_URL;
 
+        let lat, lng;
+
+        // Try AccuWeather geocoding
         try {
             const searchRes = await axios.get(
-                `${baseUrl}/locations/v1/cities/search?apikey=${apiKey}&q=${encodeURIComponent(city)}&language=en-US`
+                `${baseUrl}/locations/v1/cities/search?apikey=${apiKey}&q=${encodeURIComponent(city)}&language=en-US`,
+                { timeout: 8000 }
             );
-
             if (!searchRes.data || searchRes.data.length === 0) {
-                return res.status(404).json({ success: false, error: 'City not found. Try a different spelling.', code: 'CITY_NOT_FOUND' });
+                return res.status(404).json({ success: false, error: 'City not found.', code: 'CITY_NOT_FOUND' });
             }
-
-            const best = searchRes.data[0];
-            const lat = best.GeoPosition.Latitude;
-            const lng = best.GeoPosition.Longitude;
-
-            const result = await fetchWeatherFromLatLng(lat, lng);
-            res.json({ success: true, data: result.data, cached: result.cached, timestamp: new Date().toISOString() });
-        } catch (apiErr) {
-            console.warn('[Weather] AccuWeather API failed on by-city:', apiErr.message);
+            lat = searchRes.data[0].GeoPosition.Latitude;
+            lng = searchRes.data[0].GeoPosition.Longitude;
+        } catch {
+            // AccuWeather geocoding failed — try OpenWeather geocoding
             try {
-                const owApiKey = process.env.OPENWEATHER_API_KEY;
-                if (!owApiKey) throw new Error('OPENWEATHER_API_KEY not configured');
-                
-                // OpenWeather Geocoding
-                const geoRes = await axios.get(`http://api.openweathermap.org/geo/1.0/direct?q=${encodeURIComponent(city)}&limit=1&appid=${owApiKey}`);
+                const owKey = process.env.OPENWEATHER_API_KEY;
+                if (!owKey) throw new Error('No OW key');
+                const geoRes = await axios.get(
+                    `http://api.openweathermap.org/geo/1.0/direct?q=${encodeURIComponent(city)}&limit=1&appid=${owKey}`,
+                    { timeout: 8000 }
+                );
                 if (!geoRes.data || geoRes.data.length === 0) {
-                    return res.status(404).json({ success: false, error: 'City not found. Try a different spelling.', code: 'CITY_NOT_FOUND' });
+                    return res.status(404).json({ success: false, error: 'City not found.', code: 'CITY_NOT_FOUND' });
                 }
-                
-                const lat = geoRes.data[0].lat;
-                const lng = geoRes.data[0].lon;
-                
-                const owData = await fetchWeatherFromOpenWeather(parseFloat(lat), parseFloat(lng));
-                owData.location.city = geoRes.data[0].name; // ensure correct city name
-                console.log('[Weather] Using OpenWeather fallback data for by-city');
-                res.json({ success: true, data: owData, cached: false, source: 'openweather', timestamp: new Date().toISOString() });
-            } catch (owErr) {
-                console.error('[Weather] OpenWeather API also failed on by-city, using mock fallback:', owErr.message);
-                const fallback = getFallbackWeatherData(null, null); // Bhopal default
-                fallback.location.city = city; // Override with searched city
-                res.json({ success: true, data: fallback, cached: false, source: 'fallback', timestamp: new Date().toISOString() });
+                lat = geoRes.data[0].lat;
+                lng = geoRes.data[0].lon;
+            } catch {
+                const fallback = getFallbackWeatherData(null, null, null);
+                fallback.location.city = city;
+                return res.json({ success: true, data: fallback, cached: false, source: 'mock', timestamp: new Date().toISOString() });
             }
         }
+
+        const result = await resolveWeather(lat, lng);
+        res.json({ success: true, data: result.data, cached: result.cached, source: result.source, timestamp: new Date().toISOString() });
     } catch (error) {
         next(error);
     }

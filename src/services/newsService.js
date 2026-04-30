@@ -27,62 +27,112 @@ async function fetchGoogleNews(state, lang) {
     return [];
 }
 
+// ── Robust JSON extraction ────────────────────────────────────────
+/**
+ * Strip markdown fences and attempt JSON.parse.
+ * Falls back to partial-array recovery when the response was truncated.
+ */
+function extractJsonArray(raw) {
+    if (!raw) return null;
+
+    // 1. Strip ```json … ``` or ``` … ``` wrappers
+    let text = raw.trim()
+        .replace(/^```(?:json)?\s*/i, '')
+        .replace(/```\s*$/, '')
+        .trim();
+
+    // 2. Direct parse
+    try { return JSON.parse(text); } catch (_) {}
+
+    // 3. Extract the outermost [...] block
+    const match = text.match(/\[[\s\S]*\]/);
+    if (match) {
+        try { return JSON.parse(match[0]); } catch (_) {}
+    }
+
+    // 4. Partial recovery — find the last complete "}" and close the array
+    const startBracket = text.indexOf('[');
+    if (startBracket !== -1) {
+        const sub = text.slice(startBracket);
+        const lastClose = sub.lastIndexOf('}');
+        if (lastClose !== -1) {
+            const candidate = sub.slice(0, lastClose + 1) + ']';
+            try {
+                const parsed = JSON.parse(candidate);
+                if (Array.isArray(parsed) && parsed.length > 0) {
+                    console.warn(`[News] Recovered ${parsed.length} articles from truncated AI response`);
+                    return parsed;
+                }
+            } catch (_) {}
+        }
+    }
+
+    return null;
+}
+
+// ── AI filtering ──────────────────────────────────────────────────
 async function filterNewsWithAI(articles, lang) {
     if (articles.length === 0) return [];
-    
+
     const geminiKey = process.env.GEMINI_API_KEY;
     const nvidiaKey = process.env.NVIDIA_NIM_API_KEY;
-    
-    const prompt = `You are an expert Indian agricultural news curator. I will provide you with a JSON list of news articles.
-Your task:
-1. Remove all articles NOT directly useful for farmers (e.g., skip pure politics, celebrity news, or general crime).
-2. Prioritize news about crop prices, weather alerts, farming techniques, and government schemes.
-3. Return ONLY a valid JSON array of objects. Do not change the object keys (title, link, publishedAt, source).
-4. Return all articles that meet the above criteria. Do not limit the count.
-5. Return NO text other than the JSON array.
 
-Input List (Top 100 raw articles):
-${JSON.stringify(articles.slice(0, 100))}`;
+    // Cap input at 30 articles — sending 100 easily exceeds output token limits
+    // causing truncated JSON (the actual bug: "Expected ',' or ']' at position 10835")
+    const input = articles.slice(0, 30);
 
-    // Try Gemini
+    const prompt = `You are an expert Indian agricultural news curator.
+Filter the following JSON array of news articles. Keep ONLY articles directly useful to Indian farmers (crop prices, weather alerts, farming techniques, government schemes, crop diseases, irrigation, MSP updates). Remove politics, celebrity news, and unrelated topics.
+Return ONLY a valid JSON array using the exact same object structure (keys: title, link, publishedAt, source). No markdown, no explanation — just the JSON array.
+
+Input:
+${JSON.stringify(input)}`;
+
+    // 1. Try Gemini
     if (geminiKey && geminiKey !== 'your_gemini_api_key_here') {
         try {
-            console.log("[News] Attempting Gemini filtering...");
-            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`;
+            console.log('[News] Attempting Gemini filtering...');
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiKey}`;
             const response = await axios.post(url, {
                 contents: [{ parts: [{ text: prompt }] }],
-                generationConfig: { responseMimeType: "application/json" }
-            });
+                generationConfig: {
+                    responseMimeType: 'application/json',
+                    maxOutputTokens: 8192,
+                    temperature: 0.1
+                }
+            }, { timeout: 20000 });
             const text = response.data?.candidates?.[0]?.content?.parts?.[0]?.text;
-            if (text) return JSON.parse(text);
+            const parsed = extractJsonArray(text);
+            if (parsed && parsed.length > 0) return parsed;
+            console.warn('[News] Gemini returned unparseable response, trying fallback...');
         } catch (err) {
-            console.warn("[News] Gemini AI failed:", err.message);
+            console.warn('[News] Gemini AI failed:', err.message);
         }
     }
 
-    // Try NVIDIA NIM (Fallback)
+    // 2. Try NVIDIA NIM
     if (nvidiaKey && nvidiaKey.startsWith('nvapi')) {
         try {
-            console.log("[News] Attempting NVIDIA NIM filtering...");
+            console.log('[News] Attempting NVIDIA NIM filtering...');
             const response = await axios.post('https://integrate.api.nvidia.com/v1/chat/completions', {
-                model: "meta/llama-3.1-8b-instruct",
-                messages: [{ role: "user", content: prompt }],
-                temperature: 0.1
+                model: 'meta/llama-3.1-8b-instruct',
+                messages: [{ role: 'user', content: prompt }],
+                temperature: 0.1,
+                max_tokens: 4096
             }, {
-                headers: { 'Authorization': `Bearer ${nvidiaKey}`, 'Content-Type': 'application/json' }
+                headers: { 'Authorization': `Bearer ${nvidiaKey}`, 'Content-Type': 'application/json' },
+                timeout: 20000
             });
             const content = response.data?.choices?.[0]?.message?.content;
-            if (content) {
-                const match = content.match(/\[[\s\S]*\]/);
-                const jsonStr = match ? match[0] : content;
-                return JSON.parse(jsonStr);
-            }
+            const parsed = extractJsonArray(content);
+            if (parsed && parsed.length > 0) return parsed;
+            console.warn('[News] NVIDIA NIM returned unparseable response.');
         } catch (err) {
-            console.warn("[News] NVIDIA NIM AI failed:", err.message);
+            console.warn('[News] NVIDIA NIM AI failed:', err.message);
         }
     }
 
-    console.warn("[News] AI filtering skipped or failed. Returning raw news.");
+    console.warn('[News] AI filtering skipped or failed. Returning raw news.');
     return articles;
 }
 
@@ -117,7 +167,6 @@ async function fetchAndCacheNewsForState(state, lang) {
         for (const item of all) {
             if (item.title && !seen.has(item.title.toLowerCase())) {
                 const pubDate = new Date(item.publishedAt);
-                // Keep if date is valid and recent (or if parsing fails, we could drop or keep, let's keep only valid recent)
                 if (pubDate >= oneMonthAgo || isNaN(pubDate.getTime())) {
                     seen.add(item.title.toLowerCase());
                     unique.push(item);

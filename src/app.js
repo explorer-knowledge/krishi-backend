@@ -17,6 +17,7 @@ const cropAdvisoryRoutes = require('./routes/cropAdvisoryRoutes');
 const plantRoutes = require('./routes/plantRoutes');
 const yieldRoutes = require('./routes/yieldRoutes');
 const authRoutes = require('./routes/authRoutes');
+const feedbackRoutes = require('./routes/feedbackRoutes');
 const app = express();
 
 // Middleware
@@ -77,6 +78,7 @@ app.use('/api/advisory', cropAdvisoryRoutes);
 app.use('/api/plants', plantRoutes);
 app.use('/api/yield', yieldRoutes);
 app.use('/api/auth', authRoutes);
+app.use('/api/feedback', feedbackRoutes);
 
 // Error Handling Middleware
 app.use(errorHandler);

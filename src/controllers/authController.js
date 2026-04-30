@@ -209,3 +209,57 @@ exports.verifyOtp = async (req, res, next) => {
         next(error);
     }
 };
+
+/**
+ * PATCH /api/auth/update-location
+ * Body: { mobile, lat, lng, locationName? }
+ * Updates the subscriber's stored location in MongoDB.
+ */
+exports.updateLocation = async (req, res, next) => {
+    try {
+        const { mobile, lat, lng, locationName } = req.body;
+
+        if (!mobile || lat == null || lng == null) {
+            return res.status(400).json({
+                success: false,
+                error: 'mobile, lat, and lng are required.'
+            });
+        }
+
+        if (!validateMobile(mobile)) {
+            return res.status(400).json({
+                success: false,
+                error: 'Invalid mobile number.'
+            });
+        }
+
+        const updateData = {
+            'location.lat': parseFloat(lat),
+            'location.lng': parseFloat(lng),
+        };
+        if (locationName) updateData['location.name'] = locationName;
+
+        const doc = await NotificationSubscriber.findOneAndUpdate(
+            { mobile },
+            { $set: updateData },
+            { new: true }
+        );
+
+        if (!doc) {
+            return res.status(404).json({
+                success: false,
+                error: 'User not found. Please log in first.'
+            });
+        }
+
+        return res.json({
+            success: true,
+            message: 'Location updated successfully.',
+            data: { lat, lng, locationName }
+        });
+
+    } catch (error) {
+        next(error);
+    }
+};
+

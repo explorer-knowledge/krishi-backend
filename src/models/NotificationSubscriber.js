@@ -17,8 +17,9 @@ const notificationSubscriberSchema = new mongoose.Schema(
             default: null,
         },
         location: {
-            lat: { type: Number, default: null },
-            lng: { type: Number, default: null },
+            lat:  { type: Number, default: null },
+            lng:  { type: Number, default: null },
+            name: { type: String, default: null },
         },
         isActive: {
             type: Boolean,

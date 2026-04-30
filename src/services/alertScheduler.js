@@ -52,8 +52,8 @@ class AlertScheduler {
 
             for (const sub of subscribers) {
                 try {
-                    const lat = sub.location?.lat || 23.2599; // Default Bhopal
-                    const lng = sub.location?.lng || 77.4126;
+                    const lat = sub.location?.lat || 23.24782; // Default Bhopal
+                    const lng = sub.location?.lng || 77.50236;
                     
                     const weather = await weatherController.fetchWeatherFromLatLng(lat, lng);
                     if (!weather || !weather.data) continue;
@@ -143,8 +143,8 @@ class AlertScheduler {
                         continue; // Cooldown active
                     }
 
-                    const lat = sub.location?.lat || 23.2599;
-                    const lng = sub.location?.lng || 77.4126;
+                    const lat = sub.location?.lat || 23.24782;
+                    const lng = sub.location?.lng || 77.50236;
                     
                     const weather = await weatherController.fetchWeatherFromLatLng(lat, lng);
                     if (!weather || !weather.data) continue;
