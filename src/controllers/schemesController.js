@@ -28,11 +28,8 @@ const scrapeSchemes = async () => {
                     scrapedSchemes.push({
                         id: `scraped-${Date.now()}-${i}`,
                         name_en: title,
-                        name_hi: title,
                         benefit_en: 'For more details, visit the official link.',
-                        benefit_hi: 'अधिक जानकारी के लिए आधिकारिक लिंक पर जाएं।',
                         eligibility_en: 'Refer to official guidelines',
-                        eligibility_hi: 'आधिकारिक दिशानिर्देश देखें',
                         apply_url: link,
                         category: 'all'
                     });
@@ -96,9 +93,9 @@ function filterSchemes(schemes, category, lang) {
   let filtered = category === 'all' ? schemes : schemes.filter(s => s.category === category);
   return filtered.map(s => ({
     id: s.id,
-    name: lang === 'hi' ? s.name_hi : s.name_en,
-    benefit: lang === 'hi' ? s.benefit_hi : s.benefit_en,
-    eligibility: lang === 'hi' ? s.eligibility_hi : s.eligibility_en,
+    name: s.name_en,
+    benefit: s.benefit_en,
+    eligibility: s.eligibility_en,
     apply_url: s.apply_url,
     category: s.category
   }));

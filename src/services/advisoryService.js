@@ -32,13 +32,62 @@ exports.generateDailyAdvisory = async (weather, subscriber) => {
         const priceData = prices.status === 'fulfilled' && prices.value.length > 0 ? prices.value[0] : null;
         const schemeData = schemes.status === 'fulfilled' && schemes.value.length > 0 ? schemes.value[0] : null;
 
-        let systemPrompt = `You are Krishi-Mitra, an agricultural assistant. Generate a short, actionable daily crop advisory for a farmer via SMS/WhatsApp.
-Keep it UNDER 160 CHARACTERS. Be direct. Language: ${lang}.
-Farmer context: Crops: ${crops}. Irrigation: ${irrigation}. State: ${state}.
-Weather today: Temp: ${weather.current?.temperature || 'N/A'}°C, Condition: ${weather.current?.weatherTextTranslated || weather.current?.weatherText || 'N/A'}.`;
+        let systemPrompt = `
+You are "Krishi-Mitra", an expert agricultural advisor for Indian farmers.
+
+TASK:
+Generate a VERY SHORT daily farming advisory message for SMS/WhatsApp.
+
+STRICT RULES:
+- MAX 160 characters (hard limit)
+- 1–2 sentences ONLY
+- No emojis, no formatting, no bullet points
+- Be DIRECT and ACTIONABLE (tell farmer what to DO)
+- Use simple ${lang} language (no technical jargon)
+- Focus on TODAY's action
+
+CONTEXT TO USE (priority order):
+1. Weather (MOST IMPORTANT)
+2. Crop type
+3. Irrigation availability
+4. Market price (if given)
+5. Government scheme (if relevant)
+
+INSTRUCTIONS:
+- If rain likely → advise delay irrigation/spraying
+- If hot → suggest irrigation timing (morning/evening)
+- If humid → warn about pests/disease risk
+- If price < MSP → suggest holding/selling via govt
+- If no strong signal → give general best practice
+
+OUTPUT STYLE:
+- Speak like a practical farmer advisor
+- No explanations, no reasoning
+- Just final advisory text
+
+BAD EXAMPLE:
+"The weather forecast indicates precipitation so irrigation should be postponed."
+GOOD EXAMPLE:
+"Rain likely today. Do not irrigate. Check wheat for rust signs."
+
+Farmer:
+Crop: ${crops}
+State: ${state}
+Irrigation: ${irrigation}
+
+Weather:
+Temp: ${weather.current?.temperature || 'N/A'}°C
+Condition: ${weather.current?.weatherTextTranslated || weather.current?.weatherText || 'N/A'}
+${weather.agri?.rainProbability ? `Rain: ${weather.agri.rainProbability}%` : ''}
+
+${priceData ? `Price (${crop}): ₹${priceData.Modal_x0020_Price || priceData.modal_price}/quintal` : ''}
+${schemeData ? `Scheme: ${schemeData.name || schemeData.name_en}` : ''}
+
+Generate the advisory now.
+`;
 
         if (weather.agri && weather.agri.rainProbability) {
-             systemPrompt += ` Rain probability: ${weather.agri.rainProbability}%.`;
+            systemPrompt += ` Rain probability: ${weather.agri.rainProbability}%.`;
         }
 
         if (priceData) {
@@ -51,9 +100,9 @@ Weather today: Temp: ${weather.current?.temperature || 'N/A'}°C, Condition: ${w
 
         const response = await axios.post(
             'https://api.groq.com/openai/v1/chat/completions',
-            { 
-                model: process.env.GROQ_MODEL || 'llama-3.1-8b-instant', 
-                messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: 'Generate my daily advisory.' }] 
+            {
+                model: process.env.GROQ_MODEL || 'llama-3.1-8b-instant',
+                messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: 'Generate my daily advisory.' }]
             },
             { headers: { 'Authorization': `Bearer ${groqApiKey}`, 'Content-Type': 'application/json' } }
         );

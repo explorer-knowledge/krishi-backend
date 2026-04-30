@@ -1,6 +1,8 @@
 const Groq = require('groq-sdk');
 const axios = require('axios');
 const cache = require('../utils/cache');
+const perenualService = require('../services/perenualService');
+const agriFeedService = require('../services/agriFeedService');
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
@@ -46,13 +48,10 @@ You MUST return ONLY a valid JSON object in this exact structure. No extra text,
   "top_crops": [
     {
       "name": "Wheat",
-      "name_hi": "गेहूं",
       "rank": 1,
       "confidence": "High",
       "why_suitable": "Black soil retains moisture well for wheat roots, suitable for Rabi season",
-      "why_suitable_hi": "काली मिट्टी में नमी अच्छी तरह रहती है",
       "water_need": "Medium (2-3 irrigations)",
-      "water_need_hi": "मध्यम (2-3 सिंचाई)",
       "approx_profit_per_acre": "₹15,000 - ₹20,000",
       "market_price_note": "Current modal price in your state is ₹2100/quintal",
       "applicable_schemes": ["PM-KISAN", "PMFBY"],
@@ -61,15 +60,12 @@ You MUST return ONLY a valid JSON object in this exact structure. No extra text,
     }
   ],
   "general_advice": "Based on your region and season...",
-  "general_advice_hi": "आपके क्षेत्र और मौसम के आधार पर...",
   "weather_consideration": "Rain expected this week — delay sowing by 5-7 days",
   "important_warning": null
 }
 
 LANGUAGE RULES:
-- If lang is "hi": Fill all _hi fields with proper Hindi. General advice in Hindi.
-- If lang is "en": Keep English. _hi fields can be empty strings.
-- Always include BOTH name and name_hi regardless of lang.
+
 
 STRICT RULES:
 1. Base recommendations on ACTUAL soil-crop compatibility, not just season
@@ -81,7 +77,11 @@ STRICT RULES:
 7. If the farmer has no irrigation, strongly prefer drought-tolerant crops
 `;
 
-function buildWhatToGrowPrompt({ season, state, soilType, hasIrrigation, farmSizeAcres, weatherData, priceData, cropSuggestions, lang, seasonData }) {
+function buildWhatToGrowPrompt({ season, state, soilType, hasIrrigation, farmSizeAcres, weatherData, priceData, cropSuggestions, lang, seasonData, plantData, targetCrop, agriArticles }) {
+    const newsSummary = agriArticles && agriArticles.length > 0
+      ? agriArticles.map(a => `- ${a.title} (${a.contentSnippet})`).join('\n')
+      : 'No recent farming news available.';
+
     return `
 FARMER PROFILE:
 - State: ${state}
@@ -99,13 +99,26 @@ ${weatherData ? JSON.stringify(weatherData) : 'Not available'}
 CURRENT MARKET PRICES IN ${state.toUpperCase()}:
 ${priceData.length > 0 ? priceData.slice(0, 5).map(p => `${p.Commodity} at ${p.Market}: Modal ₹${p.Modal_x0020_Price}/quintal`).join(', ') : 'Not available'}
 
+BOTANICAL & CARE DATA (via Perenual Plant API for ${targetCrop}):
+${plantData ? JSON.stringify({
+  scientific_name: plantData.scientific_name,
+  watering: plantData.watering,
+  sunlight: plantData.sunlight,
+  care_level: plantData.care_level,
+  hardiness: plantData.hardiness,
+  growth_rate: plantData.growth_rate,
+  description: plantData.description
+}) : 'Not available'}
+
+RECENT FARMING NEWS (agrifarming.in):
+${newsSummary}
+
 Generate the complete structured recommendation JSON for this farmer.
-Language requested: ${lang === 'hi' ? 'Hindi' : 'English'}
+Language requested: English
 `;
 }
 
-// Dummy fetchWeather for illustration, assume it exists in weatherController or similar if needed.
-// For now we pass null or empty if not easily imported.
+
 async function fetchTopPrices(state) {
   try {
     const res = await axios.get('https://api.data.gov.in/resource/9ef84268-d588-465a-a308-a864a43d0070', {
@@ -125,18 +138,6 @@ const getRecommendations = async (req, res) => {
     return res.status(400).json({ error: 'season, state, and soilType are required' });
   }
 
-  let weatherData = null;
-  let priceData = [];
-
-  try {
-    const [prices] = await Promise.allSettled([
-      fetchTopPrices(state)
-    ]);
-    priceData = prices.status === 'fulfilled' ? prices.value : [];
-  } catch (e) {
-    console.warn('Supporting data fetch failed:', e.message);
-  }
-
   const seasonData = CROP_KNOWLEDGE[season.toLowerCase()] || CROP_KNOWLEDGE.kharif;
   const soilCrops = SOIL_CROP_MAP[soilType] || [];
 
@@ -144,9 +145,33 @@ const getRecommendations = async (req, res) => {
   const fallbackCrops = soilCrops.length > 0 ? soilCrops : seasonData.crops;
   const cropSuggestions = suitableCrops.length >= 3 ? suitableCrops : fallbackCrops;
 
+  const targetCrop = req.body.cropType || cropSuggestions[0];
+
+  let weatherData = null;
+  let priceData = [];
+  let plantData = null;
+  let agriArticles = [];
+
+  try {
+    const [prices, plantSearch, agriArticlesRes] = await Promise.allSettled([
+      fetchTopPrices(state),
+      perenualService.searchPlants(targetCrop),
+      agriFeedService.getContextForCrop(targetCrop)
+    ]);
+    priceData = prices.status === 'fulfilled' ? prices.value : [];
+    agriArticles = agriArticlesRes.status === 'fulfilled' ? agriArticlesRes.value : [];
+    
+    if (plantSearch.status === 'fulfilled' && plantSearch.value && plantSearch.value.data && plantSearch.value.data.length > 0) {
+        const firstPlantId = plantSearch.value.data[0].id;
+        plantData = await perenualService.getPlantDetails(firstPlantId);
+    }
+  } catch (e) {
+    console.warn('Supporting data fetch failed:', e.message);
+  }
+
   const prompt = buildWhatToGrowPrompt({
     season, state, soilType, hasIrrigation, farmSizeAcres,
-    weatherData, priceData, cropSuggestions, lang, seasonData
+    weatherData, priceData, cropSuggestions, lang, seasonData, plantData, targetCrop, agriArticles
   });
 
   try {

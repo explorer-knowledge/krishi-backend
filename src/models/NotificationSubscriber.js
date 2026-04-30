@@ -12,6 +12,10 @@ const notificationSubscriberSchema = new mongoose.Schema(
             type: String,
             default: 'Unknown',
         },
+        district: {
+            type: String,
+            default: null,
+        },
         location: {
             lat: { type: Number, default: null },
             lng: { type: Number, default: null },
@@ -40,6 +44,37 @@ const notificationSubscriberSchema = new mongoose.Schema(
             type: String,
             default: 'hi',
         },
+        // Farm profile from "What to Grow" section
+        season: {
+            type: String,
+            default: null,
+        },
+        soilType: {
+            type: String,
+            default: null,
+        },
+        soilData: {
+            nitrogen:  { type: Number, default: null },
+            phosphorus: { type: Number, default: null },
+            potassium: { type: Number, default: null },
+            ph:        { type: Number, default: null },
+            moisture:  { type: Number, default: null },
+            rainfall:  { type: Number, default: null },
+            temperature: { type: Number, default: null },
+        },
+        hasIrrigation: {
+            type: Boolean,
+            default: null,
+        },
+        // Session tracking
+        lastLoginAt: {
+            type: Date,
+            default: null,
+        },
+        loginCount: {
+            type: Number,
+            default: 0,
+        },
         lastDailyAlertAt: {
             type: Date,
             default: null,
@@ -61,6 +96,7 @@ const notificationSubscriberSchema = new mongoose.Schema(
         timestamps: { createdAt: 'subscribedAt', updatedAt: 'updatedAt' },
     }
 );
+
 
 // Virtual for masked mobile
 notificationSubscriberSchema.virtual('maskedMobile').get(function () {

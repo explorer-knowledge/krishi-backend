@@ -15,6 +15,7 @@
     "axios": "^1.15.2",
     "cheerio": "^1.2.0",
     "cors": "^2.8.6",
+    "csv-parse": "^6.2.1",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "express-rate-limit": "^8.4.1",
@@ -23,6 +24,7 @@
     "mongoose": "^8.23.1",
     "morgan": "^1.10.1",
     "node-cron": "^4.2.1",
+    "rss-parser": "^3.13.0",
     "twilio": "^6.0.0"
   },
   "devDependencies": {

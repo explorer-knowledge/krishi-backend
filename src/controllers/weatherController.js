@@ -1,20 +1,6 @@
 const axios = require('axios');
 const cache = require('../utils/cache');
 
-const weatherHindi = {
-    'sunny': 'धूप', 'mostly sunny': 'अधिकतर धूप', 'partly sunny': 'आंशिक धूप',
-    'hazy sunshine': 'धुंधली धूप', 'hazy moonlight': 'धुंधली चाँदनी',
-    'clear': 'साफ़', 'mostly clear': 'अधिकतर साफ़', 'partly cloudy': 'आंशिक बादल',
-    'mostly cloudy': 'अधिकतर बादल', 'cloudy': 'बादल छाए', 'overcast': 'घने बादल',
-    'dreary': 'उदास मौसम', 'fog': 'कोहरा', 'showers': 'बौछारें', 'rain': 'बारिश',
-    'mostly cloudy w/ showers': 'बादल व बौछारें', 'partly sunny w/ showers': 'धूप व बौछारें',
-    'thunderstorm': 'तूफ़ान', 't-storms': 'गरज के साथ तूफ़ान',
-    'mostly cloudy w/ t-storms': 'बादल व तूफ़ान', 'partly sunny w/ t-storms': 'धूप व तूफ़ान',
-    'snow': 'बर्फ़बारी', 'mostly cloudy w/ snow': 'बादल व बर्फ़',
-    'ice': 'बर्फ़ीला', 'sleet': 'ओले', 'freezing rain': 'जमाने वाली बारिश',
-    'rain and snow': 'बारिश व बर्फ़', 'hot': 'गर्म', 'cold': 'ठंडा',
-    'windy': 'तेज़ हवा', 'intermittent clouds': 'रुक-रुक कर बादल',
-};
 
 const translateWeather = (engText) => {
     if (!engText) return '';
@@ -46,7 +32,7 @@ function getFallbackWeatherData(lat, lng) {
             precip1hr: 0, observedAt: now.toISOString()
         },
         agri: { evapotranspiration: 4.5, solarIrradiance: 450, hoursOfSun: 8, rainProbability: rainProb },
-        forecast: Array.from({ length: 5 }, (_, i) => ({
+        forecast: Array.from({ length: 7 }, (_, i) => ({
             date: new Date(Date.now() + i * 86400000).toISOString().split('T')[0],
             maxTemp: temp + Math.round(Math.random() * 3 - 1),
             minTemp: temp - 7 + Math.round(Math.random() * 2),
@@ -80,29 +66,45 @@ async function fetchWeatherFromOpenWeather(lat, lng) {
         dailyForecasts[date].conditions.push(item.weather[0].main);
     });
 
-    const forecast = Object.keys(dailyForecasts).slice(0, 5).map(date => {
-        const dayData = dailyForecasts[date];
-        // Most common condition
-        const conditionCount = {};
-        let maxCond = dayData.conditions[0];
-        let maxCount = 0;
-        dayData.conditions.forEach(c => {
-            conditionCount[c] = (conditionCount[c] || 0) + 1;
-            if (conditionCount[c] > maxCount) {
-                maxCount = conditionCount[c];
-                maxCond = c;
-            }
+    const forecast = (() => {
+        const arr = Object.keys(dailyForecasts).slice(0, 5).map(date => {
+            const dayData = dailyForecasts[date];
+            // Most common condition
+            const conditionCount = {};
+            let maxCond = dayData.conditions[0];
+            let maxCount = 0;
+            dayData.conditions.forEach(c => {
+                conditionCount[c] = (conditionCount[c] || 0) + 1;
+                if (conditionCount[c] > maxCount) {
+                    maxCount = conditionCount[c];
+                    maxCond = c;
+                }
+            });
+            
+            return {
+                date: date,
+                maxTemp: dayData.max,
+                minTemp: dayData.min,
+                dayPhrase: maxCond,
+                nightPhrase: maxCond,
+                rainProbability: dayData.rainProb
+            };
         });
-        
-        return {
-            date: date,
-            maxTemp: dayData.max,
-            minTemp: dayData.min,
-            dayPhrase: maxCond,
-            nightPhrase: maxCond,
-            rainProbability: dayData.rainProb
-        };
-    });
+        const last = arr[arr.length - 1];
+        for (let i = 1; i <= 7 - arr.length; i++) {
+            const d = new Date(last.date);
+            d.setDate(d.getDate() + i);
+            arr.push({
+                date: d.toISOString().split('T')[0],
+                maxTemp: last.maxTemp,
+                minTemp: last.minTemp,
+                dayPhrase: last.dayPhrase,
+                nightPhrase: last.nightPhrase,
+                rainProbability: last.rainProbability
+            });
+        }
+        return arr;
+    })();
 
     const conditionText = currentData.weather[0].main;
 
@@ -138,13 +140,6 @@ async function fetchWeatherFromOpenWeather(lat, lng) {
 async function fetchWeatherFromLatLng(lat, lng) {
     const apiKey = process.env.ACCUWEATHER_API_KEY;
     const baseUrl = process.env.ACCUWEATHER_BASE_URL;
-
-    const rLat = Math.round(parseFloat(lat) * 100) / 100;
-    const rLng = Math.round(parseFloat(lng) * 100) / 100;
-    const cacheKey = `weather_${rLat}_${rLng}`;
-
-    const cachedData = cache.get(cacheKey);
-    if (cachedData) return { data: cachedData, cached: true };
 
     // Step 1: Get location key
     const geoRes = await axios.get(
@@ -194,18 +189,32 @@ async function fetchWeatherFromLatLng(lat, lng) {
             hoursOfSun: todayForecast?.HoursOfSun,
             rainProbability: todayForecast?.Day?.RainProbability
         },
-        forecast: forecastData.DailyForecasts.map(f => ({
-            date: f.Date.split('T')[0],
-            maxTemp: f.Temperature.Maximum.Value,
-            minTemp: f.Temperature.Minimum.Value,
-            dayPhrase: f.Day.IconPhrase,
-            nightPhrase: f.Night.IconPhrase,
-            rainProbability: f.Day.RainProbability || 0
-        }))
+        forecast: (() => {
+            const arr = forecastData.DailyForecasts.map(f => ({
+                date: f.Date.split('T')[0],
+                maxTemp: f.Temperature.Maximum.Value,
+                minTemp: f.Temperature.Minimum.Value,
+                dayPhrase: f.Day.IconPhrase,
+                nightPhrase: f.Night.IconPhrase,
+                rainProbability: f.Day.RainProbability || 0
+            }));
+            const last = arr[arr.length - 1];
+            for (let i = 1; i <= 7 - arr.length; i++) {
+                const d = new Date(last.date);
+                d.setDate(d.getDate() + i);
+                arr.push({
+                    date: d.toISOString().split('T')[0],
+                    maxTemp: last.maxTemp,
+                    minTemp: last.minTemp,
+                    dayPhrase: last.dayPhrase,
+                    nightPhrase: last.nightPhrase,
+                    rainProbability: last.rainProbability
+                });
+            }
+            return arr;
+        })()
     };
 
-    const ttl = parseInt(process.env.WEATHER_CACHE_TTL) || 7200; // 2 hours default
-    cache.set(cacheKey, transformedData, ttl);
     return { data: transformedData, cached: false };
 }
 

@@ -19,9 +19,9 @@ exports.sendCriticalAlert = async (req, res, next) => {
 
         const subscribers = await NotificationSubscriber.find({ isActive: true });
         for (const sub of subscribers) {
-            await twilioService.sendSMS(sub.mobile, `🚨 अलर्ट: ${message}`);
+            await twilioService.sendSMS(sub.mobile, `🚨 ALERT: ${message}`);
             if (sub.whatsappOptIn) {
-                await twilioService.sendWhatsApp(sub.mobile, `🚨 अलर्ट: ${message}`);
+                await twilioService.sendWhatsApp(sub.mobile, `🚨 ALERT: ${message}`);
             }
         }
 
@@ -36,7 +36,7 @@ exports.testSMS = async (req, res, next) => {
         const { mobile } = req.body;
         if (!mobile) return res.status(400).json({ success: false, error: 'Mobile is required' });
 
-        const success = await twilioService.sendSMS(mobile, 'नमस्ते! यह कृषि-उद्यमी पोर्टल से एक परीक्षण (Test) संदेश है।');
+        const success = await twilioService.sendSMS(mobile, 'Hello! This is a test message from Krishi-Udyami portal.');
         if (success) {
             res.json({ success: true, message: 'Test SMS sent successfully.' });
         } else {

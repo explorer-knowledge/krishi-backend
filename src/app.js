@@ -14,6 +14,9 @@ const notificationRoutes = require('./routes/notificationRoutes');
 const pricesRoutes = require('./routes/pricesRoutes');
 const whatToGrowRoutes = require('./routes/whatToGrowRoutes');
 const cropAdvisoryRoutes = require('./routes/cropAdvisoryRoutes');
+const plantRoutes = require('./routes/plantRoutes');
+const yieldRoutes = require('./routes/yieldRoutes');
+const authRoutes = require('./routes/authRoutes');
 const app = express();
 
 // Middleware
@@ -71,6 +74,9 @@ app.use('/api/alerts', notificationRoutes);
 app.use('/api/prices', pricesRoutes);
 app.use('/api/what-to-grow', whatToGrowRoutes);
 app.use('/api/advisory', cropAdvisoryRoutes);
+app.use('/api/plants', plantRoutes);
+app.use('/api/yield', yieldRoutes);
+app.use('/api/auth', authRoutes);
 
 // Error Handling Middleware
 app.use(errorHandler);

@@ -2,9 +2,11 @@ const Groq = require('groq-sdk');
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 const axios = require('axios');
 const cache = require('../utils/cache');
+const perenualService = require('../services/perenualService');
+const agriFeedService = require('../services/agriFeedService');
 
 const ADVISORY_SYSTEM_PROMPT = (lang) => `
-You are "Krishi-Mitra" (कृषि-मित्र), an intelligent agricultural advisor built specifically for Indian farmers.
+You are "Krishi-Mitra", an intelligent agricultural advisor built specifically for Indian farmers.
 
 IDENTITY:
 - You are a knowledgeable, friendly, and practical farming advisor
@@ -28,41 +30,31 @@ When asked for initial crop advisory, return ONLY this JSON structure. No preamb
   "crop": "Wheat",
   "todayAction": {
     "title": "Today's Field Action",
-    "title_hi": "आज का खेत का काम",
     "action": "Based on weather forecast showing rain in next 48 hours, DO NOT irrigate today. Hold irrigation for 3 days.",
-    "action_hi": "अगले 48 घंटों में बारिश के पूर्वानुमान के कारण, आज सिंचाई मत करें। 3 दिन प्रतीक्षा करें।",
     "urgency": "normal",
     "icon": "💧"
   },
   "marketAdvice": {
     "title": "Market Advice",
-    "title_hi": "बाजार सलाह",
     "advice": "Current wheat modal price in your state is ₹2100/quintal. MSP is ₹2275. Prices are below MSP — consider selling through government procurement.",
-    "advice_hi": "आपके राज्य में गेहूं का मॉडल मूल्य ₹2100/क्विंटल है। MSP ₹2275 है। बाजार भाव MSP से कम है — सरकारी खरीद के माध्यम से बेचने पर विचार करें।",
     "action": "HOLD or sell via government channel",
     "icon": "📊"
   },
   "pestAlert": {
     "title": "Pest & Disease Alert",
-    "title_hi": "कीट और रोग चेतावनी",
     "alert": "High humidity (>75%) + warm temperature in forecast creates risk of Yellow Rust in wheat. Inspect leaves for yellow stripes.",
-    "alert_hi": "उच्च आर्द्रता + गर्म तापमान पीला जंग रोग का खतरा बढ़ाते हैं। पत्तियों पर पीली धारियों की जांच करें।",
     "severity": "medium",
     "remedy": "Apply Propiconazole 25 EC @ 0.1% if rust spots appear. Cost: ~₹200/acre",
-    "remedy_hi": "यदि जंग के धब्बे दिखें तो Propiconazole 25 EC @ 0.1% छिड़कें। लागत: ~₹200/एकड़",
     "icon": "🪲"
   },
   "schemeReminder": {
     "title": "Scheme You Should Apply For",
-    "title_hi": "योजना जिसके लिए आवेदन करें",
     "scheme": "PMFBY Crop Insurance — Rabi season enrollment ends November 30",
-    "scheme_hi": "PMFBY फसल बीमा — रबी सीजन नामांकन 30 नवंबर को बंद होता है",
     "benefit": "Covers up to 100% of crop loss due to natural disasters",
     "url": "https://pmfby.gov.in",
     "icon": "🏛"
   },
   "summary": "Short 2-line overall summary of your situation and top priority.",
-  "summary_hi": "आपकी स्थिति का 2-पंक्ति का सारांश और प्राथमिकता।"
 }
 
 FOLLOW-UP QUESTION FORMAT:
@@ -111,6 +103,14 @@ Please answer in ${lang === 'hi' ? 'Hindi' : 'English'} in 3-6 sentences.`;
     ? context.schemes.map(s => s.name || s.name_en).slice(0, 4).join(', ')
     : 'PM-KISAN, PMFBY, KCC, Soil Health Card';
 
+  const plantSummary = context.plantData
+    ? `Scientific Name: ${context.plantData.scientific_name}, Watering: ${context.plantData.watering}, Sunlight: ${context.plantData.sunlight}, Care Level: ${context.plantData.care_level}`
+    : 'Not available';
+
+  const newsSummary = context.agriArticles && context.agriArticles.length > 0
+    ? context.agriArticles.map(a => `- ${a.title} (${a.contentSnippet})`).join('\n')
+    : 'No recent farming news available.';
+
   return `
 FARMER PROFILE:
 - Crop: ${crop}
@@ -126,8 +126,14 @@ ${weatherSummary}
 CURRENT MARKET PRICES IN ${state.toUpperCase()}:
 ${pricesSummary}
 
+BOTANICAL & CARE DATA (via Perenual API):
+${plantSummary}
+
 AVAILABLE GOVERNMENT SCHEMES:
 ${schemesSummary}
+
+RECENT FARMING NEWS (agrifarming.in):
+${newsSummary}
 
 Based on ALL the above data, generate the complete structured advisory JSON for this farmer.
 Language requested: ${lang === 'hi' ? 'Hindi' : 'English'}
@@ -167,15 +173,25 @@ const getStructuredAdvisory = async (req, res) => {
   }
 
   // Fetch all context in parallel
-  const [prices, schemes] = await Promise.allSettled([
+  const [prices, schemes, plantSearch, agriArticles] = await Promise.allSettled([
     fetchCropPrices(crop, state),
-    getCachedSchemes()
+    getCachedSchemes(),
+    perenualService.searchPlants(crop),
+    agriFeedService.getContextForCrop(crop)
   ]);
+
+  let plantData = null;
+  if (plantSearch.status === 'fulfilled' && plantSearch.value && plantSearch.value.data && plantSearch.value.data.length > 0) {
+      const firstPlantId = plantSearch.value.data[0].id;
+      plantData = await perenualService.getPlantDetails(firstPlantId);
+  }
 
   const context = {
     weather: null, // Ideally fetched using fetchWeather(lat, lng) if available
     prices: prices.status === 'fulfilled' ? prices.value : [],
-    schemes: schemes.status === 'fulfilled' ? schemes.value : []
+    schemes: schemes.status === 'fulfilled' ? schemes.value : [],
+    plantData: plantData,
+    agriArticles: agriArticles.status === 'fulfilled' ? agriArticles.value : []
   };
 
   const systemPrompt = ADVISORY_SYSTEM_PROMPT(lang);

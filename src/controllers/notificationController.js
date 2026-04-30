@@ -27,7 +27,7 @@ exports.subscribe = async (req, res, next) => {
         if (existingSubscriber) {
             return res.status(409).json({
                 success: false,
-                error: 'यह नंबर पहले से पंजीकृत है। (This number is already subscribed.) You will already receive alerts on this number.',
+                error: 'This number is already subscribed. You will already receive alerts on this number.',
                 code: 'ALREADY_SUBSCRIBED',
             });
         }
@@ -46,16 +46,12 @@ exports.subscribe = async (req, res, next) => {
 
         // Send Welcome SMS
         const lang = newSubscriber.preferredLanguage === 'en' ? 'English' : 'Hindi';
-        let welcomeMsg = lang === 'English' 
-            ? 'Welcome to Krishi-Udyami! You will receive daily weather updates and crop advisory on this number.'
-            : 'कृषि-उद्यमी में आपका स्वागत है! आपको इस नंबर पर दैनिक मौसम अपडेट और फसल सलाह प्राप्त होगी।';
+        let welcomeMsg = 'Welcome to Krishi-Udyami! You will receive daily weather updates and crop advisory on this number.';
         
         await twilioService.sendSMS(mobile, welcomeMsg);
 
         if (newSubscriber.whatsappOptIn) {
-            const waMsg = lang === 'English' 
-                ? 'Welcome to Krishi-Udyami WhatsApp Alerts! Stay tuned for daily news.'
-                : 'कृषि-उद्यमी व्हाट्सएप अलर्ट में आपका स्वागत है! आपको दैनिक समाचार मिलेंगे।';
+            const waMsg = 'Welcome to Krishi-Udyami WhatsApp Alerts! Stay tuned for daily news.';
             await twilioService.sendWhatsApp(mobile, waMsg);
         }
 
@@ -63,7 +59,7 @@ exports.subscribe = async (req, res, next) => {
             success: true,
             data: {
                 message:
-                    'सफलतापूर्वक सब्सक्राइब किया! (Successfully subscribed!) You will receive weather and farming alerts on this number.',
+                    'Successfully subscribed! You will receive weather and farming alerts on this number.',
                 mobile: newSubscriber.maskedMobile,
             },
         });
@@ -72,7 +68,7 @@ exports.subscribe = async (req, res, next) => {
         if (error.code === 11000) {
             return res.status(409).json({
                 success: false,
-                error: 'यह नंबर पहले से पंजीकृत है। (This number is already subscribed.)',
+                error: 'This number is already subscribed.',
                 code: 'ALREADY_SUBSCRIBED',
             });
         }

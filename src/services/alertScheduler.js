@@ -4,6 +4,7 @@ const twilioService = require('./twilioService');
 const advisoryService = require('./advisoryService');
 const weatherController = require('../controllers/weatherController');
 const axios = require('axios');
+const newsService = require('./newsService');
 
 class AlertScheduler {
     constructor() {
@@ -60,7 +61,7 @@ class AlertScheduler {
                     const advisory = await advisoryService.generateDailyAdvisory(weather.data, sub);
                     if (!advisory) continue;
 
-                    const msgPrefix = sub.preferredLanguage === 'en' ? 'Krishi-Udyami Daily Advisory:\n' : 'कृषि-उद्यमी दैनिक सलाह:\n';
+                    const msgPrefix = 'Krishi-Udyami Daily Advisory:\n';
                     const fullMsg = msgPrefix + advisory;
 
                     await twilioService.sendSMS(sub.mobile, fullMsg);
@@ -92,19 +93,24 @@ class AlertScheduler {
             for (const sub of subscribers) {
                 try {
                     const state = sub.state || 'Madhya Pradesh';
-                    const query = encodeURIComponent(`${state} किसान OR कृषि`);
-                    const rssUrl = `https://news.google.com/rss/search?q=${query}&hl=hi&gl=IN&ceid=IN:hi`;
-                    const apiUrl = `https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(rssUrl)}`;
-                    
-                    const response = await axios.get(apiUrl);
-                    let newsText = `कृषि-उद्यमी समाचार (${state}):\n`;
-                    
-                    if (response.data && response.data.items && response.data.items.length > 0) {
-                        response.data.items.slice(0, 3).forEach((item, idx) => {
-                            newsText += `${idx + 1}. ${item.title.split(' - ')[0]}\n`;
-                        });
-                    } else {
-                        newsText += 'आज कोई मुख्य समाचार नहीं है।\n';
+                    const lang = sub.preferredLanguage === 'en' ? 'en' : 'hi';
+
+                    let newsText = `Krishi-Udyami News (${state}):\n`;
+                    if (lang === 'en') newsText = `Krishi-Udyami News (${state}):\n`;
+
+                    try {
+                        const data = await newsService.getNewsForState(state, lang);
+                        
+                        if (data && data.articles && data.articles.length > 0) {
+                            data.articles.slice(0, 3).forEach((item, idx) => {
+                                newsText += `${idx + 1}. ${item.title}\n`;
+                            });
+                        } else {
+                            newsText += 'No major news today.\n';
+                        }
+                    } catch (err) {
+                        console.warn(`[AlertScheduler] Could not fetch news for ${state} ${lang}. Using fallback.`);
+                        newsText += 'No major news today.\n';
                     }
 
                     await twilioService.sendWhatsApp(sub.mobile, newsText);
@@ -151,15 +157,15 @@ class AlertScheduler {
                     const rainProb = wd.agri?.rainProbability;
                     const text = (wd.current?.weatherText || '').toLowerCase();
 
-                    if (rainProb > 80) { isCritical = true; reason = 'भारी बारिश की संभावना (High rain probability)'; }
-                    if (temp > 43) { isCritical = true; reason = 'अत्यधिक गर्मी (Extreme heat)'; }
-                    if (temp < 5) { isCritical = true; reason = 'पाला पड़ने की संभावना (Frost/Extreme cold)'; }
+                    if (rainProb > 80) { isCritical = true; reason = 'High rain probability'; }
+                    if (temp > 43) { isCritical = true; reason = 'Extreme heat'; }
+                    if (temp < 5) { isCritical = true; reason = 'Frost/Extreme cold'; }
                     if (text.includes('storm') || text.includes('thunder') || text.includes('hail') || text.includes('cyclone')) {
-                        isCritical = true; reason = 'तूफान चेतावनी (Storm warning)';
+                        isCritical = true; reason = 'Storm warning';
                     }
 
                     if (isCritical) {
-                        const msg = `🚨 कृषि-उद्यमी महत्वपूर्ण अलर्ट 🚨\nकारण: ${reason}\nकृप्या अपनी फसल और उपकरणों को सुरक्षित करें।`;
+                        const msg = `🚨 Krishi-Udyami CRITICAL ALERT 🚨\nReason: ${reason}\nPlease secure your crops and equipment.`;
                         
                         await twilioService.sendSMS(sub.mobile, msg);
                         if (sub.whatsappOptIn) {

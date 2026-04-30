@@ -1,6 +1,6 @@
 const axios = require('axios');
 const cache = require('../utils/cache');
-const cheerio = require('cheerio'); // Optional fallback for agmarknet
+
 
 const MAJOR_CROPS = [
   'Wheat', 'Rice', 'Maize', 'Cotton', 'Soybean', 'Sugarcane',
